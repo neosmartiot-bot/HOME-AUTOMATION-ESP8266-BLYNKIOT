@@ -113,14 +113,28 @@
 
   volatile uint32_t zcCount = 0;
 
-  volatile bool zcDetected = false;
+  volatile bool zcDetected = true;
+  volatile bool systemReady = false;
   
   // volatile uint32_t lastZC = 0;
   volatile uint32_t lastZCtime = 0;
   volatile uint32_t rejectCount = 0;
+  
   volatile uint32_t halfCycleTime = 10000;   // default 10ms 
   
 ////////// -------------------- Runtime Variables --------------------//////////
+
+  const uint16_t fanDelay[10] = 
+  {9000,   // OFF
+   8000,
+   7000,
+   6000,
+   5000,
+   4000,
+   3000,
+   2000,
+   1200,
+   600};   // FULL
   
   String currentTime;
   String currentDate;
@@ -129,9 +143,14 @@
 
   int brightness = 1;
   int directionn = 1;   // +1 = increasing, -1 = decreasing
-  
+
+
+   uint32_t dt;
+   
   uint8_t Relay1State = LOW;
   uint8_t Relay2State = LOW;
+  
+  static bool timerArmed = false;
   
   uint8_t targetBrightness = 255;
   uint8_t currentBrightness = 100;
@@ -174,9 +193,11 @@
     // Blynk.syncVirtual(V2);   // Temper
     // Blynk.syncVirtual(V3);   // Humidi 
     
-    // Blynk.syncVirtual(V4);   // Relay1
-    // Blynk.syncVirtual(V5);   // Relay2
-    Blynk.syncVirtual(V6);}  // Fan Rl
+    Blynk.syncVirtual(V4);   // Relay1
+    Blynk.syncVirtual(V5);   // Relay2
+    Blynk.syncVirtual(V6);   // Fan Rl
+
+    systemReady = true;}     // ENABLE AFTER SYNC
   
 BLYNK_WRITE(V4)
  {Relay1State = param.asInt();
@@ -195,16 +216,8 @@ BLYNK_WRITE(V6)
  BLOGLN("[BLYNK] Fan Slider: " + String(targetBrightness));
  saveEEPROM();}*/
  {currentBrightness = param.asInt();
-  // currentBrightness = targetBrightness;
   BLOGLN("[BLYNK] Fan Slider: " + String(currentBrightness));
-  saveEEPROM();
-  
-  if (currentBrightness == 0)
-     {// digitalWrite(TRIAC1_PIN, 0);
-      BLOGLN("[BLYNK] Low Brightness: " + String(currentBrightness));}
-  else
-     {// digitalWrite(TRIAC1_PIN, 1);
-      BLOGLN("[BLYNK] High Brightness: " + String(currentBrightness));}}
+  saveEEPROM();}
      
  /*{Slider_Value = param.asInt(); 
   if (Slider_Value>0)
@@ -228,42 +241,56 @@ void setup()
   
   BLOGLN("\n[BOOT] System Starting...");
   
+  // pinMode(ZEROCR_PIN, INPUT_PULLUP);
+  
   pinMode(ZEROCR_PIN, INPUT);
     
   pinMode(RELAY1_PIN, OUTPUT);
   pinMode(RELAY2_PIN, OUTPUT);
     
   pinMode(TRIAC1_PIN, OUTPUT);
-
-  // digitalWrite(RELAY1_PIN, HIGH);
-  // digitalWrite(RELAY2_PIN, HIGH);
   
-  digitalWrite(TRIAC1_PIN, 0);
+  // digitalWrite(TRIAC1_PIN, 0);
+
+  systemReady = false;
     
   loadEEPROM();
+
+  // currentBrightness = 0;   // FORCE OFF at boot
   
   // // // // // //BLOGLN("[INIT] EEPROM Loaded");
   // // //BLOGLN("Relay1=" + String(Relay1State));
   // // //BLOGLN("Relay2=" + String(Relay2State)); 
   // BLOGLN("Dimmer=" + String(targetBrightness));
+
+  // digitalWrite(RELAY1_PIN, HIGH);
+  // digitalWrite(RELAY2_PIN, HIGH);
   
   digitalWrite(RELAY1_PIN, Relay1State);
   digitalWrite(RELAY2_PIN, Relay2State);
+  currentBrightness = currentBrightness;
 
-  delay(2000);
+  delay(1000);
   
   // attachInterrupt(digitalPinToInterrupt(ZEROCR_PIN), zeroCrossISR, RISING);
 
+  BlynkEdgent.begin();
+
+  delay(1000);
+  
+  // if (Blynk.connected())
+  
   attachInterrupt(ZEROCR_PIN, zeroCrossISR, RISING);
+  // attachInterrupt(ZEROCR_PIN, zeroCrossISR, FALLING);
   
   hw_timer_init(NMI_SOURCE, 0);
   hw_timer_set_func(dimTimerISR);
 
-  // WiFi.persistent(true);
   // WiFi.setAutoReconnect(true);
+  // WiFi.persistent(true);
   // WiFi.mode(WIFI_STA);
   
-  BlynkEdgent.begin();
+  // BlynkEdgent.begin();
   
   BLOGLN("[WIFI] Mode=" + String(WiFi.getMode()));
   BLOGLN("[WIFI] SSID=" + WiFi.SSID());
@@ -288,115 +315,153 @@ void loop()
 
  static uint32_t lastZC = 0;
  static uint32_t lastPrint = 0;
-  
- //////// ---------- Print RTC time every 1 second ---------- //////////
- 
- if (millis() - lastRequest > 1000)
-    {lastRequest = millis();
-     pushTimeBlynk();}}
 
- ///////// ---------- Print zcCount every 2 seconds ---------- /////////
+ ///////// ---------- Print zcCount every 1 second ---------- /////////
   
  // -- if (millis() % 2000 < 50) // modulo use a bit sloppy method -- //
  
- /*if (millis() - lastPrint > 1000)
-      {lastPrint = millis();
-   
-       // BLOGLN("ZC Count: " + String(zcCount));
-       // BLOGLN("ZC: " + String(zcCount) + " Reject: " + String(rejectCount));
+ if (millis() - lastPrint > 1000)
+    {lastPrint = millis();
+     pushTimeBlynk();         // included pushTime function in this also
      
-       BLOGLN("ZC Count / Sec: " + String(zcCount - lastZC));
-       lastZC = zcCount;} */
+     // BLOGLN("ZC Count: " + String(zcCount));
+     // BLOGLN("ZC: " + String(zcCount) + " Reject: " + String(rejectCount));
+     
+     BLOGLN("ZC Count / Sec: " + String(zcCount - lastZC));
+     BLOGLN("HalfCycleTime=" + String(halfCycleTime));
+     lastZC = zcCount;}
 
- // BLOGLN("[ZC] freq=" + String(freq) + " halfCycle=" + String(halfCycleTime));
+ static uint32_t lastReconnectAttempt = 0;
+     
+ if (!Blynk.connected())
+    {if (millis() - lastReconnectAttempt > 10000)
+        {lastReconnectAttempt = millis();
 
- ///////// ------------ Run this function in loop ------------ /////////
+        // Step 1: ensure WiFi is alive
+        if (WiFi.status() != WL_CONNECTED)
+           {WiFi.disconnect();
+            WiFi.begin();}
 
- // runACCycle();} 
-
-
-
-////////////////////////////////////////////////////////////////////////////////
-////////// ----------------- Run AC Cycle Function ------------------ //////////
-////////////////////////////////////////////////////////////////////////////////
-
-
-
-/*void runACCycle() 
-  {if (zcDetected)
+        // Step 2: reconnect Blynk
+        Blynk.connect(1000);}}
+        }   // timeout 1 sec
   
-     {zcDetected = false;
+////////////////////////////////////////////////////////////////////////////////
+//////////// -------------------- ISR Functions --------------------////////////
+////////////////////////////////////////////////////////////////////////////////
+  
+void ICACHE_RAM_ATTR zeroCrossISR()
 
-      if (currentBrightness == 0)
-         {digitalWrite(TRIAC1_PIN, 0);}    // full OFF
+ {zcCount++;
+ 
+      // uint16_t zcOffset = 100; // microseconds (tune this)
+      timerArmed = true;
+      uint32_t now = micros();
+      // uint32_t dt = now - lastZCtime;
+      // dt = now - lastZCtime;
+      halfCycleTime = now - lastZCtime;
+      lastZCtime = now;
 
-      else if (currentBrightness >= 255)   // full ONN
-              {digitalWrite(TRIAC1_PIN, 1);}
-
-      else
-         {GPIO_REG_WRITE(GPIO_OUT_W1TS_ADDRESS, (1 << TRIAC1_PIN));
-          os_delay_us(100);
-          GPIO_REG_WRITE(GPIO_OUT_W1TC_ADDRESS, (1 << TRIAC1_PIN));}
-
-  /////////////// ---------- safety clamp ---------- ///////////////
+      timerArmed = false;   // ALWAYS release for next cycle
       
-      // if (delayMicros < 300) delayMicros = 300;
-      // if (delayMicros > (halfCycleTime - 300))
-      //     delayMicros = halfCycleTime - 300;
-
-      // hw_timer_disarm();
-      // hw_timer_arm(delayMicros);}}*/
-
- /*  
-  {unsigned long t0 = micros();
-
-  // int localBrightness = brightness;  // snapshot (CRITICAL FIX)
-
-  if (brightness > 0)
+      static uint32_t stableDelay = 5000;
+      static uint8_t stableCounter = 0;
   
-      // ALWAYS USE PHASE CONTROL (NO BLIND OFF ZONE)
-     {// int dimDelay = map(brightness, 5, 250, 8000, 200);
-
-      int dimDelay = 200 + ((255 - brightness) * 30);
-
-      // ---- safety clamp (VERY IMPORTANT) ---- //
+   //// ---- validate AC half cycle (50Hz safe window) ---- ////
   
-      if (dimDelay > 9000) dimDelay = 9000;
-      if (dimDelay < 200) dimDelay = 200;
+   if (halfCycleTime < 8000)  // reject only very fast noise
+      {// rejectCount++;
+       return;}
 
-      delayMicroseconds(dimDelay);
-        
-      GPIO_REG_WRITE(GPIO_OUT_W1TS_ADDRESS, (1 << TRIAC1_PIN));
-      delayMicroseconds(100);
-      GPIO_REG_WRITE(GPIO_OUT_W1TC_ADDRESS, (1 << TRIAC1_PIN));}*/
-
-
-
-  /*if (brightness <= 5)          // FULL OFF → do nothing
-     {}
-  
-  else if (brightness >= 250)     // FULL ON → fire immediately
-          {dimDelay = 200;
-           delayMicroseconds(dimDelay);
-
-           GPIO_REG_WRITE(GPIO_OUT_W1TS_ADDRESS, (1 << TRIAC1_PIN));
-           delayMicroseconds(80);   // gate pulse width
-           GPIO_REG_WRITE(GPIO_OUT_W1TC_ADDRESS, (1 << TRIAC1_PIN));}
-  else
+   if (halfCycleTime > 20000) // reject only very fast noise
+      {hw_timer_arm(1000);} // force minimal firing to keep TRIAC alive
+       
+   /*if (dt > 8000 || dt < 12000)
      
-     {dimDelay = map(brightness, 5, 250, 8000, 800);
-      delayMicroseconds(dimDelay);
+        {stableCounter++;
 
-      GPIO_REG_WRITE(GPIO_OUT_W1TS_ADDRESS, (1 << TRIAC1_PIN));
-      delayMicroseconds(80);   // gate pulse width
-      GPIO_REG_WRITE(GPIO_OUT_W1TC_ADDRESS, (1 << TRIAC1_PIN));}*/
+         if (stableCounter > 50)   // update every ~0.5 sec
+            {halfCycleTime = dt;
+             stableCounter = 0;}}*/
+  
+   /////// ---------- simple low-pass filter ---------- ///////
 
-  //// ---------- WAIT UNTIL END OF HALF CYCLE ---------- ////
+   // halfCycleTime = (halfCycleTime * 7 + dt) / 8;
+   // halfCycleTime = (halfCycleTime * 15 + dt) / 16;
 
-  /*while (micros() - t0 < 10000);}   // lock to 10ms half-cycle */
+   /// ------ Adaptive delay based on real AC timing ------ ///
+
+   // uint32_t delayMicros = 30 * (255 - currentBrightness) + 400; // old formula
+  
+   // uint32_t delayMicros = (halfCycleTime * (255 - currentBrightness)) / 255;
+
+   int index = map(currentBrightness, 0, 255, 0, 9);
+   uint16_t delayMicros = fanDelay[index];
+
+   // --- Non-linear curve (gamma ≈ 2.2) --- //
+  
+   /*float normalized = currentBrightness / 255.0;
+   float gammaCorrected = normalized * normalized;   // simple gamma
+
+   uint16_t delayMicros = (1.0 - gammaCorrected) * halfCycleTime;*/
+
+   //// ------ only update if change is significant ------ ////
+
+   // if (abs((int)delayMicros - (int)stableDelay) > 50)
+      // {stableDelay = delayMicros;}
+
+   ////////// ------------- smooth it -------------- //////////
+
+   // stableDelay = (stableDelay * 7 + delayMicros) / 8;
+   // stableDelay = (stableDelay * 15 + delayMicros) / 16;
+
+   //////////// ---------- safety clamp ---------- ////////////
+  
+   if (delayMicros < 300) delayMicros = 300;
+   if (delayMicros > (halfCycleTime - 600))   // (delayMicros > (halfCycleTime - 300))
+       delayMicros = halfCycleTime - 600;     // delayMicros = halfCycleTime - 300;
+
+   ////////// ---------- ARM THE TIMER NOW ---------- /////////
+   
+   // if (!timerArmed)
+      // {timerArmed = true;
+       // hw_timer_arm(delayMicros + zcOffset);
+       hw_timer_arm(delayMicros);
+       // hw_timer_arm(stableDelay);
+   
+   }
+
+void ICACHE_RAM_ATTR dimTimerISR()
+ 
+ {if (!systemReady)
+     {currentBrightness = 100;}
+        
+      if (currentBrightness <= 10) // || (!systemReady)) // FULL OFF → do nothing
+         {digitalWrite(TRIAC1_PIN, 0);}
+          // return;}
+
+      else if (currentBrightness >= 245)       // FULL ONN → immediate firing
+
+              {digitalWrite(TRIAC1_PIN, 1);}
+               // return;}
+               /*GPIO_REG_WRITE(GPIO_OUT_W1TS_ADDRESS, (1 << TRIAC1_PIN));
+               os_delay_us(150); // 100 for bulb 150 for fan
+               GPIO_REG_WRITE(GPIO_OUT_W1TC_ADDRESS, (1 << TRIAC1_PIN));
+               return;}*/
+      else
+              {GPIO_REG_WRITE(GPIO_OUT_W1TS_ADDRESS, (1 << TRIAC1_PIN));
+               os_delay_us(100); // 100 for bulb 150 for fan
+               GPIO_REG_WRITE(GPIO_OUT_W1TC_ADDRESS, (1 << TRIAC1_PIN));}}
+
+  ////////// ---------- second reinforcement pulse ---------- //////////
+  
+  /*os_delay_us(200);
+  GPIO_REG_WRITE(GPIO_OUT_W1TS_ADDRESS, (1 << TRIAC1_PIN));
+  os_delay_us(100);
+  GPIO_REG_WRITE(GPIO_OUT_W1TC_ADDRESS, (1 << TRIAC1_PIN));}*/
 
 ////////////////////////////////////////////////////////////////////////////////
-//////////// ------------------ Update Brightness ------------------////////////
+//////////// ------------- Brightness Control Function -------------////////////
 ////////////////////////////////////////////////////////////////////////////////
 
 /*void updateBrightness()
@@ -424,142 +489,13 @@ void loop()
   else if (brightness >= 255)                 // Change direction at limits
           {brightness = 255;
            directionn = -1;}}*/
-  
-////////////////////////////////////////////////////////////////////////////////
-//////////// -------------------- ISR Functions --------------------////////////
-////////////////////////////////////////////////////////////////////////////////
-  
-void ICACHE_RAM_ATTR zeroCrossISR()
-
- {if (zcDetected)
- 
- {uint32_t now = micros();
-
-  uint32_t dt = now - lastZCtime;
-
-  static uint32_t stableDelay = 5000;
-
-  static uint8_t stableCounter = 0;
-  
-  //// ---- validate AC half cycle (50Hz safe window) ---- ////
-  
-  /*if (dt < 4000 || dt > 16000) // ignore noise
-       {rejectCount++;
-        return;}*/
-      
-  /*if (dt > 8000 || dt < 12000)
-     
-       {stableCounter++;
-
-        if (stableCounter > 50)   // update every ~0.5 sec
-           {halfCycleTime = dt;
-            stableCounter = 0;}}*/
-  
-  /////// ---------- simple low-pass filter ---------- ///////
-
-  // halfCycleTime = (halfCycleTime * 7 + dt) / 8;
-  // halfCycleTime = (halfCycleTime * 15 + dt) / 16;
-
-  /// ------ Adaptive delay based on real AC timing ------ ///
-
-  uint32_t delayMicros = (halfCycleTime * (255 - currentBrightness)) / 255;
-
-  // dimDelay = getTriacDelay(currentBrightness);
-  // hw_timer_arm(dimDelay);
-  
-  // uint32_t delayMicros = 30 * (255 - currentBrightness) + 400;
-
-  //// ------ only update if change is significant ------ ////
-
-  // if (abs((int)delayMicros - (int)stableDelay) > 50)
-     // {stableDelay = delayMicros;}
-
-  ////////// ------------- smooth it -------------- //////////
-
-  // stableDelay = (stableDelay * 7 + delayMicros) / 8;
-  // stableDelay = (stableDelay * 15 + delayMicros) / 16;
-
-  ////////// ------------ CLAMP TIGHT ------------- //////////
-  
-  if (delayMicros < 300) delayMicros = 300;
-  if (delayMicros > (halfCycleTime - 300))
-      delayMicros = halfCycleTime - 300;
-
-  ////////// ---------- ARM THE TIMER NOW ---------- /////////
-  
-  hw_timer_arm(delayMicros);
-  // hw_timer_arm(stableDelay);
-      
-  // zcCount++;
-  
-  lastZCtime = now;
-  
-  halfCycleTime = dt;
- 
-  zcDetected = false;}}
- 
-/*{if (!zerocFlag)
-      {zerocFlag = 1;
-       
-       if (currentBrightness > 1 && currentBrightness < 255)
-          {// digitalWrite(TRIAC1_PIN, 0);
-          
-           int dimDelay = 30 * (255 - currentBrightness) + 400;
-
-           hw_timer_arm(dimDelay);}  
-
-
-
-      if (currentBrightness <= 10)
-         {zerocFlag = 0;                  // FULL OFF → do nothing
-          return;}
- 
-       else if (currentBrightness >= 255) // FULL ON → immediate firing
- 
-               {GPIO_REG_WRITE(GPIO_OUT_W1TS_ADDRESS, (1 << TRIAC1_PIN));
-                os_delay_us(100);
-                GPIO_REG_WRITE(GPIO_OUT_W1TC_ADDRESS, (1 << TRIAC1_PIN));}
-       else
-          {GPIO_REG_WRITE(GPIO_OUT_W1TS_ADDRESS, (1 << TRIAC1_PIN));
-           os_delay_us(100);
-           GPIO_REG_WRITE(GPIO_OUT_W1TC_ADDRESS, (1 << TRIAC1_PIN));
-      
-           zerocFlag = 0;
-           return;}}                      // FULL OFF → do nothing*/
-
-void ICACHE_RAM_ATTR dimTimerISR()
- /*{if (currentBrightness > targetBrightness) // || currentBrightness > 0)   // || (state == 0 && curBrightness > 0))
-       {--currentBrightness;}
-    else if (currentBrightness < targetBrightness && currentBrightness < 255 && Slider_Value > 1)
-            {++currentBrightness;}*/
-            
-{if (currentBrightness <= 0)         // FULL OFF → do nothing
-    {digitalWrite(TRIAC1_PIN, 0);}
-     // return;
-
- else if (currentBrightness >= 255)   // FULL ONN → immediate firing
-
-         {digitalWrite(TRIAC1_PIN, 1);}
- else
-         {GPIO_REG_WRITE(GPIO_OUT_W1TS_ADDRESS, (1 << TRIAC1_PIN));
-          os_delay_us(100);
-          GPIO_REG_WRITE(GPIO_OUT_W1TC_ADDRESS, (1 << TRIAC1_PIN));}
-      
-  zcDetected = true;}
-      
-  ////////// ---------- second reinforcement pulse ---------- //////////
-  
-  /*os_delay_us(200);
-  GPIO_REG_WRITE(GPIO_OUT_W1TS_ADDRESS, (1 << TRIAC1_PIN));
-  os_delay_us(100);
-  GPIO_REG_WRITE(GPIO_OUT_W1TC_ADDRESS, (1 << TRIAC1_PIN));}*/
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////// ---------------- Gamma Correction Function --------------- //////////
 ////////////////////////////////////////////////////////////////////////////////
 
 /*uint16_t getTriacDelay(uint8_t brightness)
- {if (brightness <= 10)     // OFF zone
+ {if (brightness <= 10)    // OFF zone
       return 10000;        // effectively no firing
       
   if (brightness >= 250)   // FULL ON zone
